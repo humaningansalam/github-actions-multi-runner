@@ -8,7 +8,7 @@ ENV TZ=Etc/UTC
 
 # 필수 패키지 및 Docker CLI 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl tar jq git ca-certificates wget gnupg lsb-release \
+    curl tar jq git ca-certificates wget unzip gnupg lsb-release \
     apt-transport-https software-properties-common sudo \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \

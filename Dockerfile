@@ -16,9 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Docker 그룹 및 runner 사용자 설정
-RUN groupadd -g ${DOCKER_HOST_GID} docker || echo "Docker group with GID ${DOCKER_HOST_GID} already exists." \
-    && useradd -m -s /bin/bash runner \
+# Docker 그룹 설정
+RUN groupadd -g ${DOCKER_HOST_GID} docker || grep -q "^docker:" /etc/group || groupadd docker
+
+# runner 사용자 설정
+RUN useradd -m -s /bin/bash runner \
     && usermod -aG sudo runner \
     && usermod -aG docker runner \
     && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers

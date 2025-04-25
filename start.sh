@@ -6,6 +6,10 @@ RUNNER_NAME=${RUNNER_NAME:-$(hostname)}
 RUNNER_WORK_DIR=${RUNNER_WORK_DIR:-_work}
 RUNNER_LABELS=${RUNNER_LABELS:-default}
 
+echo "Changing ownership of /home/runner/${RUNNER_WORK_DIR} to runner..."
+sudo chown -R runner:runner "/home/runner/${RUNNER_WORK_DIR}"
+echo "Ownership change complete."
+
 # If the runner has already been configured, skip the config step
 if [ ! -f ".runner" ]; then
     # Configure the runner

@@ -1,0 +1,41 @@
+name: Validate runner manager
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  static-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Validate shell, CLI and Compose manifest
+        run: |
+          bash -n start.sh scripts/healthcheck.sh
+          python3 runnerctl.py --config examples/runners.example.json check
+          python3 runnerctl.py --config examples/runners.example.json render
+          docker compose -f .runnerctl/multi-gh-runners/compose.json config --quiet
+  native-image-build:
+    # This public project can use free x64 and ARM64 hosted runners.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build verified native Runner image
+        run: |
+          docker build --progress=plain -t local/multi-gh-runner:2.338.0 .
+      - name: Smoke-check installed runner and Docker tools
+        run: |
+          docker run --rm --entrypoint bash local/multi-gh-runner:2.338.0 -lc \
+            'test -x /opt/runner-dist/config.sh && test -x /opt/runner-dist/run.sh && docker --version && docker compose version && git lfs version'

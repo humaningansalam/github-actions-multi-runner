@@ -1,21 +1,9 @@
-services:
-  # 첫 번째 저장소를 위한 러너
-  runner-repo1:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    container_name: github-runner-repo1
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - runner-repo1-data:/home/runner/_work
-    environment:
-      - GITHUB_URL=https://github.com/username/repo1
-      - GITHUB_TOKEN=${REPO1_TOKEN}
-      - RUNNER_NAME=runner-repo1
-      - RUNNER_LABELS=self-hosted,linux,x64
-    restart: unless-stopped
-
-  # 필요에 따라 더 많은 저장소 추가 가능
-
-volumes:
-  runner-repo1-data:
+# Generated service definitions are managed by runnerctl.py.
+# To start multiple accounts, create runners.json (see examples/) and run:
+#   python3 runnerctl.py up
+# To view the generated Compose model:
+#   python3 runnerctl.py render
+#   docker compose -f .runnerctl/multi-gh-runners/compose.json config
+# This file deliberately contains no runnable service to prevent accidentally
+# booting an unregistered or privileged runner with stale example tokens.
+services: {}

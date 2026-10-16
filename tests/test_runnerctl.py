@@ -186,6 +186,7 @@ class RunnerCtlTests(unittest.TestCase):
             patch("runnerctl.ensure_workspace"),
             patch("runnerctl.registration_token", return_value="ephemeral-token"),
             patch("runnerctl.wait_for_healthy"),
+            patch("runnerctl.verify_profile"),
         ):
             runnerctl.do_up(config, compose, ["alpha"], build=False)
         self.assertTrue(
@@ -253,6 +254,7 @@ class RunnerCtlTests(unittest.TestCase):
             patch("runnerctl.compose_cmd", side_effect=fake_compose),
             patch("runnerctl.ensure_workspace"),
             patch("runnerctl.wait_for_fifo", return_value=False),
+            patch("runnerctl.verify_profile"),
         ):
             runnerctl.do_up(cfg, Path("fake.json"), ["alpha"], build=False)
         self.assertIn("--no-recreate", calls[0])
@@ -346,6 +348,63 @@ class RunnerCtlTests(unittest.TestCase):
                 runnerctl.RunnerError, "duplicate runner identity"
             ):
                 runnerctl.load_config(source)
+
+    def test_existing_registration_profile_must_match(self):
+        cfg = self.config()
+        runner = cfg["runners"][0]
+        good = runnerctl.expected_profile(cfg, runner)
+        with patch(
+            "runnerctl.compose_cmd",
+            return_value=MagicMock(returncode=0, stdout=good + "\n"),
+        ):
+            runnerctl.verify_profile(cfg, Path("any.json"), runner, {})
+        with patch(
+            "runnerctl.compose_cmd",
+            return_value=MagicMock(returncode=0, stdout="stale profile\n"),
+        ):
+            with self.assertRaisesRegex(
+                runnerctl.RunnerError, "active Runner registration differs"
+            ):
+                runnerctl.verify_profile(cfg, Path("any.json"), runner, {})
+
+    def test_remote_builder_architecture_is_pinned(self):
+        cfg = self.config()
+        self.assertEqual(
+            runnerctl.compose_data(cfg)["services"]["alpha"]["platform"], "linux/arm64"
+        )
+        cfg["runners"][0]["arch"] = "x64"
+        self.assertEqual(
+            runnerctl.compose_data(cfg)["services"]["alpha"]["platform"], "linux/amd64"
+        )
+
+    def test_invalid_nonnumeric_cpu_limits(self):
+        for value in (float("nan"), float("inf"), -1, 0, True):
+            with self.subTest(value=value), self.assertRaises(runnerctl.RunnerError):
+                self.config_from_manifest(
+                    {
+                        "runners": [
+                            {
+                                "id": "test",
+                                "target": "https://github.com/org/repo",
+                                "auth_env": "TOKEN",
+                                "cpus": value,
+                            }
+                        ]
+                    }
+                )
+
+    def test_gh_auth_ignores_token_env_for_explicit_account(self):
+        config = self.config(auth_env=None, auth_gh_user="account-b")
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": "other", "GITHUB_TOKEN": "wrong"}),
+            patch(
+                "runnerctl.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="right\n"),
+            ) as gh,
+        ):
+            self.assertEqual(runnerctl.load_host_token(config["runners"][0]), "right")
+        self.assertNotIn("GH_TOKEN", gh.call_args.kwargs["env"])
+        self.assertNotIn("GITHUB_TOKEN", gh.call_args.kwargs["env"])
 
     def test_no_accidental_namespace_reuse(self):
         config = self.config()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 import platform
 import re
@@ -169,7 +170,10 @@ def load_config(path: Path) -> dict[str, Any]:
             )
         cpus = raw.get("cpus")
         if cpus is not None and (
-            isinstance(cpus, bool) or not isinstance(cpus, (int, float)) or cpus <= 0
+            isinstance(cpus, bool)
+            or not isinstance(cpus, (int, float))
+            or not math.isfinite(cpus)
+            or cpus <= 0
         ):
             raise RunnerError(f"{rid}: cpus must be a positive number")
         memory = raw.get("memory")
@@ -243,6 +247,9 @@ def compose_data(
             },
             "image": f"local/multi-gh-runner:{RUNNER_VERSION}",
             "restart": "unless-stopped",
+            # Native image on this machine: do not silently run an emulated
+            # architecture or mislabel a runner if a remote builder is used.
+            "platform": "linux/arm64" if r["arch"] == "ARM64" else "linux/amd64",
             "stop_grace_period": "10m",
             "environment": {
                 "RUNNER_NAME": r["name"],
@@ -315,12 +322,18 @@ def load_host_token(runner: dict[str, Any]) -> str:
     elif runner.get("auth_gh_user"):
         source = "gh auth token --user " + runner["auth_gh_user"]
         try:
+            clean_gh_env = os.environ.copy()
+            # GH_TOKEN/GITHUB_TOKEN override gh's stored accounts; never let
+            # an unrelated environment token impersonate an explicit account.
+            clean_gh_env.pop("GH_TOKEN", None)
+            clean_gh_env.pop("GITHUB_TOKEN", None)
             proc = subprocess.run(
                 ["gh", "auth", "token", "--user", runner["auth_gh_user"]],
                 capture_output=True,
                 text=True,
                 check=False,
                 timeout=15,
+                env=clean_gh_env,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RunnerError(
@@ -503,6 +516,39 @@ def ensure_workspace(config: dict[str, Any], rid: str) -> None:
         )
 
 
+def expected_profile(config: dict[str, Any], runner: dict[str, Any]) -> str:
+    """Must match start.sh's on-disk immutable registration identity."""
+    return "|".join(
+        [
+            runner["target"],
+            runner["name"],
+            ",".join(runner["labels"]),
+            runner["group"] or "",
+            work_path(config, runner["id"]),
+        ]
+    )
+
+
+def verify_profile(
+    config: dict[str, Any], path: Path, runner: dict[str, Any], env: dict[str, str]
+) -> None:
+    """Reject stale Compose config/Runner registrations without disrupting jobs."""
+    response = compose_cmd(
+        path,
+        config["project"],
+        ["exec", "-T", runner["id"], "cat", "/home/runner/.managed-profile"],
+        env=env,
+        capture=True,
+    )
+    if response.returncode != 0 or response.stdout.strip() != expected_profile(
+        config, runner
+    ):
+        raise RunnerError(
+            f"{runner['id']}: active Runner registration differs from runners.json; "
+            "do not use normal up for identity changes; deregister and migrate during a maintenance window"
+        )
+
+
 def wait_for_fifo(
     path: Path, project: str, rid: str, env: dict[str, str], timeout: float = 50
 ) -> bool:
@@ -596,7 +642,11 @@ def do_up(
             f"Start {rid}",
         )
         if not wait_for_fifo(path, config["project"], rid, env):
-            print(f"  {rid}: existing registration retained", flush=True)
+            verify_profile(config, path, r, env)
+            print(
+                f"  {rid}: existing registration retained and identity matches",
+                flush=True,
+            )
             continue
         token = registration_token(r)
         try:
@@ -624,6 +674,7 @@ def do_up(
             flush=True,
         )
         wait_for_healthy(path, config["project"], rid, env)
+        verify_profile(config, path, r, env)
         print(
             f"  {rid}: local listener healthy (run 'doctor' to confirm GitHub online)",
             flush=True,
@@ -662,9 +713,16 @@ def main(argv: list[str] | None = None) -> int:
         "--no-build", action="store_true", help="Use a previously built image"
     )
     sub.add_parser("status", help="Docker Compose ps")
-    sub.add_parser(
+    p_doctor = sub.add_parser(
         "doctor",
-        help="Check registered Runner presence/architecture on GitHub (requires configured PATs)",
+        help="Check registered Runner online/labels on GitHub (requires configured auth)",
+    )
+    p_doctor.add_argument(
+        "--wait",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Wait for GitHub API status to become online after registration",
     )
     p_down = sub.add_parser(
         "down", help="Stop runners only when online/idle; retain state/work volumes"
@@ -718,30 +776,56 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "status":
             checked(compose_cmd(path, config["project"], ["ps"], env=env), "status")
         elif args.command == "doctor":
+            if args.wait < 0 or args.wait > 600:
+                raise RunnerError("doctor --wait must be between 0 and 600 seconds")
             problems = 0
             for r in config["runners"]:
-                runners = github_runners(r)
+                expected = {
+                    "self-hosted",
+                    "linux",
+                    r["arch"].lower(),
+                    *(x.lower() for x in r["labels"]),
+                }
+                deadline = time.monotonic() + args.wait
+                while True:
+                    runners = github_runners(r)
+                    ready = False
+                    if len(runners) == 1:
+                        runner = runners[0]
+                        labels = {
+                            str(x.get("name", "")).lower()
+                            for x in runner.get("labels", [])
+                        }
+                        ready = (
+                            runner.get("status") == "online"
+                            and str(runner.get("os", "")).lower() == "linux"
+                            and expected <= labels
+                        )
+                    if ready or time.monotonic() >= deadline:
+                        break
+                    time.sleep(min(3, max(0, deadline - time.monotonic())))
                 if not runners:
                     print(
                         f"MISSING {r['id']}: {r['name']} not registered at {r['target']}"
                     )
                     problems += 1
-                    continue
-                if len(runners) > 1:
+                elif len(runners) > 1:
                     print(
                         f"AMBIGUOUS {r['id']}: multiple registered runners have this name"
                     )
                     problems += 1
-                    continue
-                runner = runners[0]
-                labels = {x.get("name", "").lower() for x in runner.get("labels", [])}
-                expected = r["arch"].lower()
-                if expected not in labels or runner.get("status") != "online":
-                    problems += 1
-                print(
-                    f"{r['id']}: status={runner.get('status')} busy={runner.get('busy')} "
-                    f"os={runner.get('os')} arch={'ok' if expected in labels else 'MISMATCH'}"
-                )
+                else:
+                    runner = runners[0]
+                    labels = {
+                        str(x.get("name", "")).lower() for x in runner.get("labels", [])
+                    }
+                    missing = sorted(expected - labels)
+                    if not ready:
+                        problems += 1
+                    print(
+                        f"{r['id']}: status={runner.get('status')} busy={runner.get('busy')} "
+                        f"os={runner.get('os')} labels={'ok' if not missing else 'missing ' + ','.join(missing)}"
+                    )
             if problems:
                 raise RunnerError(
                     f"doctor found {problems} missing/offline/mismatched runner(s)"

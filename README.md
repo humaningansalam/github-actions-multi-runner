@@ -66,11 +66,11 @@ python3 runnerctl.py check     # 대상, 아키텍처, 라벨/권한 설정 검�
 python3 runnerctl.py render    # .runnerctl/multi-gh-runners/compose.json 생성 (PAT 없음)
 python3 runnerctl.py up        # 이미지 빌드 → 권한 준비 → 자동 등록 → 시작 (실행 중인 컨테이너 재생성 금지)
 python3 runnerctl.py status    # Docker 컨테이너 상태
-python3 runnerctl.py doctor    # GitHub에 등록된 Runner online/arch 확인 (PAT 필요)
+python3 runnerctl.py doctor --wait 60  # 새 등록 직후 online 전파까지 기다리고 라벨/OS도 확인
 python3 runnerctl.py logs personal-web
 ```
 
-`up`은 처음에 이미지를 다운로드/빌드하므로 시간이 걸릴 수 있습니다. 이미 실행 중인 Runner 컨테이너는 `up`을 반복해도 재생성되지 않습니다. 원격 등록 토큰은 **1시간 유효**하며, 실행 시에만 API로 새로 받습니다. 정상적으로 등록된 이후 PAT가 만료되더라도 **기존 Runner 서비스는 저장된 등록 자격으로 계속 실행**할 수 있지만, `doctor`나 재등록에는 PAT가 필요합니다.
+`up`은 처음에 이미지를 다운로드/빌드하므로 시간이 걸릴 수 있습니다. 이미 실행 중인 Runner 컨테이너는 `up`을 반복해도 재생성되지 않습니다. 이때 디스크에 저장된 등록 대상·이름·라벨·작업 경로가 요청한 설정과 다르면 성공으로 넘기지 않고 **설정 불일치 오류**를 표시합니다. 원격 등록 토큰은 **1시간 유효**하며, 실행 시에만 API로 새로 받습니다. 정상적으로 등록된 이후 PAT가 만료되더라도 **기존 Runner 서비스는 저장된 등록 자격으로 계속 실행**할 수 있지만, `doctor`나 재등록에는 PAT가 필요합니다.
 
 `python3 runnerctl.py up`은 반복 실행해도 **기존 컨테이너를 강제로 재생성하지 않습니다**. 변경된 Docker 이미지·환경변수를 적용할 때만 **빌드 제출을 멈추고** `python3 runnerctl.py recreate [runner-id]`를 사용하세요. GitHub API에서 대상 Runner가 **online + idle + 중복 없는 이름**으로 확인돼야 진행합니다. GitHub의 확인 직후 새 작업이 배정될 가능성은 여전히 있으므로 운영 중 실제 작업을 막는 점검 시간을 확보하세요.
 
@@ -78,7 +78,7 @@ python3 runnerctl.py logs personal-web
 
 ### 아키텍처 및 라벨
 
-호스트의 실제 CPU가 ARM64면 `self-hosted`, `Linux`, `ARM64`, x86-64면 `self-hosted`, `Linux`, `X64` 라벨이 GitHub에 자동 등록됩니다. **`labels`에 `x64`나 `ARM64`를 억지로 선언하지 않습니다.** 필요하면 `host_arch: "ARM64"` 또는 `"x64"`를 넣어 서버별 설정 착오를 검출할 수 있습니다.
+호스트의 실제 CPU가 ARM64면 `self-hosted`, `Linux`, `ARM64`, x86-64면 `self-hosted`, `Linux`, `X64` 라벨이 GitHub에 자동 등록됩니다. Docker Compose의 `platform`도 해당 아키텍처로 고정해 잘못된 빌더가 에뮬레이션 이미지를 선택하지 않게 합니다. **`labels`에 `x64`나 `ARM64`를 억지로 선언하지 않습니다.** 필요하면 `host_arch: "ARM64"` 또는 `"x64"`를 넣어 서버별 설정 착오를 검출할 수 있습니다.
 
 ```yaml
 jobs:
@@ -133,7 +133,7 @@ docker system df
 docker buildx du
 ```
 
-`doctor`는 PAT으로 GitHub 등록된 Runner의 상태, busy, OS/아키텍처 라벨을 확인합니다. Docker가 running이어도 GitHub에서 offline일 수 있으니 둘을 함께 보세요. Runner 컨테이너 로그는 크기·개수 제한으로 로테이션합니다. Runner 내부 `_diag`는 재시작 때 무조건 지우지 않습니다.
+`doctor`는 지정된 인증으로 GitHub에 등록된 Runner의 상태, busy, OS/아키텍처 및 사용자 지정 라벨을 확인합니다. GitHub API에 새 Runner가 처음에는 잠깐 `offline`으로 보일 수 있으므로 등록 직후에는 `doctor --wait 60`을 사용하세요. Docker가 running이어도 GitHub에서 offline일 수 있으니 둘을 함께 보세요. Runner 컨테이너 로그는 크기·개수 제한으로 로테이션합니다. Runner 내부 `_diag`는 재시작 때 무조건 지우지 않습니다.
 
 ### 기존 v1 설치에서 이전하기
 
@@ -152,7 +152,7 @@ docker buildx du
 
 ## 테스트
 
-공개 저장소의 GitHub-hosted **x86-64 + ARM64 네이티브 Docker 빌드**와 Python 테스트를 위한 워크플로 예제를 `examples/workflows/validate.yml`에 제공합니다. CI를 자동 실행하려면 `mkdir -p .github/workflows && cp examples/workflows/validate.yml .github/workflows/validate.yml`로 활성화할 수 있습니다. GitHub 워크플로 파일을 푸시하려면 **GitHub 인증에 workflow 수정 권한**이 필요합니다. 현재 CI 템플릿은 예제로 제공하며, ARM64 실제 Docker 빌드 검증이 완료됐다고 주장하지 않습니다.
+공개 저장소의 GitHub-hosted **x86-64 + ARM64 네이티브 Docker 빌드**와 Python 테스트를 위한 워크플로 예제를 `examples/workflows/validate.yml`에 제공합니다. CI를 자동 실행하려면 `mkdir -p .github/workflows && cp examples/workflows/validate.yml .github/workflows/validate.yml`로 활성화할 수 있습니다. GitHub 워크플로 파일을 푸시하려면 **GitHub 인증에 workflow 수정 권한**이 필요할 수 있습니다. 현재 CI 템플릿은 예제로 제공하며, ARM64 실제 Docker 빌드 검증이 완료됐다고 주장하지 않습니다.
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -165,3 +165,11 @@ docker compose -f .runnerctl/multi-gh-runners/compose.json config --quiet
 공식 참고 자료: [GitHub Self-hosted Runners](https://docs.github.com/en/actions/concepts/runners/self-hosted-runners) · [Runner REST API](https://docs.github.com/en/rest/actions/self-hosted-runners) · [Runner Security](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
 
 MIT License.
+
+### 운영 투입 전 점검표
+
+1. 각 서버의 실제 아키텍처를 확인하고 `runners.json`에 `host_arch`를 명시해 배치 오류 방지. 이름 충돌을 피하려면 서버별 `name` 고유화.
+2. 장기 인증은 등록/진단 전용. 여러 GitHub 계정에 대해 권한 최소화와 토큰 만료 정책 설정.
+3. `python3 runnerctl.py check` → `up` → `doctor --wait 60` → 해당 저장소에서 작은 테스트 Job 한 개를 직접 제출해 `_work` 경로·산출물·Docker 권한까지 확인.
+4. 운영 중 Runner가 `busy`인 상태에서는 재배포 금지. `recreate`가 GitHub API에서 `idle`을 확인해도 확인 직후 새 작업이 배정되는 레이스는 남으므로, 점검 시간에는 새 작업 유입을 먼저 차단.
+5. ARM64 실제 이미지/빌드 Job 검증, GitHub-hosted ARM64 CI 활성화, 백업과 로그/디스크 정책은 각 서버에 배포하기 전에 완료.

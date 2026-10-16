@@ -1,47 +1,46 @@
-FROM ubuntu
+# Linux x64/ARM64 self-hosted runner. Native architecture is selected by BuildKit.
+FROM ubuntu:24.04
 
-# 기본 설정
-ARG RUNNER_VERSION=2.323.0
 ARG DEBIAN_FRONTEND=noninteractive
-ARG DOCKER_HOST_GID=998
+ARG TARGETARCH
+ARG RUNNER_VERSION=2.338.0
+ENV RUNNER_IMAGE_VERSION=${RUNNER_VERSION}
 ENV TZ=Etc/UTC
 
-# 필수 패키지 및 Docker CLI 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl tar jq git ca-certificates wget unzip gnupg lsb-release \
-    apt-transport-https software-properties-common sudo \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
-    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
-    && apt-get clean \
+      bash ca-certificates curl git git-lfs jq gnupg procps tar tini unzip \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# Docker 그룹 설정
-RUN groupadd -g ${DOCKER_HOST_GID} docker || grep -q "^docker:" /etc/group || groupadd docker
+# Hashes verified against the official actions/runner release v2.338.0.
+# When updating RUNNER_VERSION, update both hashes too; fail closed otherwise.
+ARG RUNNER_SHA256_X64=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
+ARG RUNNER_SHA256_ARM64=628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) runner_arch=x64; runner_sha="${RUNNER_SHA256_X64}" ;; \
+      arm64) runner_arch=arm64; runner_sha="${RUNNER_SHA256_ARM64}" ;; \
+      *) echo "Unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    install -d /opt/runner-dist; \
+    curl --fail --location --silent --show-error --retry 3 \
+      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz" \
+      --output /tmp/runner.tar.gz; \
+    echo "${runner_sha}  /tmp/runner.tar.gz" | sha256sum --check; \
+    tar -xzf /tmp/runner.tar.gz -C /opt/runner-dist; \
+    rm /tmp/runner.tar.gz; \
+    /opt/runner-dist/bin/installdependencies.sh; \
+    chmod -R a+rX /opt/runner-dist
 
-# runner 사용자 설정
-RUN useradd -m -s /bin/bash runner \
-    && usermod -aG sudo runner \
-    && usermod -aG docker runner \
-    && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-# 러너 설치 및 설정
-WORKDIR /home/runner
-RUN ARCH=$(dpkg --print-architecture) && \
-    case ${ARCH} in \
-        amd64) RUNNER_ARCH="x64" ;; \
-        arm64) RUNNER_ARCH="arm64" ;; \
-        *) echo "Unsupported architecture: ${ARCH}" ; exit 1 ;; \
-    esac && \
-    curl -o actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz -L https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz && \
-    tar xzf ./actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz && \
-    rm ./actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz && \
-    ./bin/installdependencies.sh && \
-    chown -R runner:runner /home/runner
-
-# 시작 스크립트 설정
-COPY --chown=runner:runner start.sh /home/runner/start.sh
-RUN chmod +x /home/runner/start.sh
-
+RUN useradd --uid 10001 --create-home --shell /bin/bash runner \
+    && install -d -o runner -g runner /home/runner/_work
+COPY --chmod=0755 start.sh /usr/local/bin/start.sh
+COPY --chmod=0755 scripts/healthcheck.sh /usr/local/bin/healthcheck.sh
 USER runner
-ENTRYPOINT ["/home/runner/start.sh"]
+WORKDIR /home/runner
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start.sh"]

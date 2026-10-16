@@ -1,0 +1,6 @@
+# Keep local auth files, runner state and workspaces OUT of Docker build contexts.
+**
+!Dockerfile
+!start.sh
+!scripts/
+!scripts/healthcheck.sh

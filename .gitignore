@@ -99,3 +99,10 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,linux,macos,visualstudiocode
+# Host-specific runner manifest, generated Compose and credential material
+/runners.json
+/.runnerctl/
+*.pat
+*.token
+/.runner-data/
+__pycache__/

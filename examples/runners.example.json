@@ -1,0 +1,30 @@
+{
+  "project": "multi-gh-runners",
+  "data_root": "~/.local/share/github-actions-multi-runner",
+  "runners": [
+    {
+      "id": "personal-web",
+      "scope": "repo",
+      "target": "https://github.com/account-a/web-app",
+      "auth_file": "~/.config/multi-gh-runners/personal.pat",
+      "labels": ["build", "web"],
+      "docker_socket": false
+    },
+    {
+      "id": "secondary-docker",
+      "scope": "repo",
+      "target": "https://github.com/account-b/backend",
+      "auth_env": "GITHUB_PAT_SECONDARY",
+      "labels": ["build", "docker"],
+      "docker_socket": true
+    },
+    {
+      "id": "team-build",
+      "scope": "org",
+      "target": "https://github.com/MY_ORGANIZATION",
+      "auth_file": "~/.config/multi-gh-runners/team.pat",
+      "labels": ["build"],
+      "docker_socket": false
+    }
+  ]
+}
